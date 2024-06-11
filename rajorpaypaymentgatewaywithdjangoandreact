@@ -1,0 +1,278 @@
+#step-0 
+
+
+
+
+
+
+
+#step-1
+Install Razorpay's python package    -  $ pip install razorpay
+Install djangorestframework          -  $ pip install djangorestframework
+Create Project                       -  $ django-admin startproject myproject
+Create payments app                  -  $ python manage.py startapp payments
+cors header                          -  $ python -m pip install django-cors-headers
+
+#STEP-2
+ INSTALLED_APPS = [
+                               'django.contrib.admin',
+                                …
+                               ‘payments’ ,   # add like this
+                                'rest_framework',   # add like this 
+                                ‘corsheaders’,  # add like this
+                      ]
+
+
+MIDDLEWARE = [
+                            'django.middleware.security.SecurityMiddleware',
+                             …
+                            ‘corsheaders.middleware.CorsMiddleware',  # add like this
+                    ]
+
+
+                CORS_ORIGIN_ALLOW_ALL=True  # add like this after middleware.
+
+
+$ python manage.py makemigrations payments
+$ python manage.py migrate
+
+#main urls.py
+from django.urls import path, include
+
+  urlpatterns = [
+               path('admin/', admin.site.urls),
+               path('',include("payments.urls")), # add like this 
+  ]
+
+#step-2 payments/admin.py
+from django.contrib import admin
+from .models import RazorpayPayment
+
+admin.site.register(RazorpayPayment)
+
+#step-3 payments/views.py
+import JSON
+import os
+import razorpay
+from rest_framework import status
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from payments.constants import PaymentStatus
+
+from payments. models import RazorpayPayment
+
+# Get Razorpay Key id and secret for authorizing razorpay client.
+RAZOR_KEY = os.getenv('RAZORPAY_KEY', None)
+RAZOR_SECRET = os.getenv('RAZORPAY_SECRET', None)
+
+# Creating a Razorpay Client instance.
+razorpay_client = razorpay.Client(auth=("RAZOR_KEY", "RAZOR_SECRET"))
+
+
+class PaymentView(APIView):
+    """
+    APIView for Creating Razorpay Order.
+    :return: list of all necessary values to open Razorpay SDK
+    """
+
+    http_method_names = ('post',)
+
+    @staticmethod
+    def post(request, *args, **kwargs):
+
+        # Take Order Id from frontend and get all order info from Database.
+        # order_id = request.data.get('order_id', None)
+
+        # Here We are Using Static Order Details for Demo.
+        name = "Swapnil Pawar"
+        amount = 400
+
+        # Create Order
+        razorpay_order = razorpay_client.order.create(
+            {"amount": int(amount) * 100, "currency": "INR", "payment_capture": "1"}
+        )
+
+        # Save the order in DB
+        order = RazorpayPayment.objects.create(
+            name=name, amount=amount, provider_order_id=razorpay_order["id"]
+        )
+
+        data = {
+            "name" : name,
+            "merchantId": "RAZOR_KEY",
+            "amount": amount,
+            "currency" : 'INR' ,
+            "orderId" : razorpay_order["id"],
+            }
+
+        # save order Details to frontend
+        return Response(data, status=status.HTTP_200_OK)
+
+class CallbackView(APIView):
+    
+    """
+    APIView for Verifying Razorpay Order.
+    :return: Success and failure response messages
+    """
+
+    @staticmethod
+    def post(request, *args, **kwargs):
+
+        # getting data form request
+        response = request.data.dict()
+
+        """
+            if razorpay_signature is present in the request 
+            it will try to verify
+            else throw error_reason
+        """
+        if "razorpay_signature" in response:
+
+            # Verifying Payment Signature
+            data = razorpay_client.utility.verify_payment_signature(response)
+
+            # if we get here True signature
+            if data:
+                payment_object = RazorpayPayment.objects.get(provider_order_id = response['razorpay_order_id'])                # razorpay_payment = RazorpayPayment.objects.get(order_id=response['razorpay_order_id'])
+                payment_object.status = PaymentStatus.SUCCESS
+                payment_object.payment_id = response['razorpay_payment_id']
+                payment_object.signature_id = response['razorpay_signature']          
+                payment_object.save()
+
+                return Response({'status': 'Payment Done'}, status=status.HTTP_200_OK)
+            else:
+                return Response({'status': 'Signature Mismatch!'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Handling failed payments
+        else:
+            error_code = response['error[code]']
+            error_description = response['error[description]']
+            error_source = response['error[source]']
+            error_reason = response['error[reason]']
+            error_metadata = json.loads(response['error[metadata]'])
+            razorpay_payment =   RazorpayPayment.objects.get(provider_order_id=error_metadata['order_id'])
+            razorpay_payment.payment_id = error_metadata['payment_id']
+            razorpay_payment.signature_id = "None"
+            razorpay_payment.status = PaymentStatus.FAILURE
+            razorpay_payment.save()
+
+            error_status = {
+                'error_code': error_code,
+                'error_description': error_description,
+                'error_source': error_source,
+                'error_reason': error_reason,
+            }
+
+            return Response({'error_data': error_status}, status=status.HTTP_401_UNAUTHORIZED)
+
+#STEP-4 payments/urls.py
+
+from django.urls import include, path
+from django.contrib import admin
+from .views import RazorpayPaymentView , RazorpayCallback
+
+urlpatterns = [
+    path('razorpay_order', RazorpayView.as_view(), name='razorpay_order'),
+    path('razorpay_callback', CallbackView.as_view(), name='razorpay_callback'),
+]
+
+#STEP-5 payments/constants.py
+class PaymentStatus:
+    SUCCESS = "Success"
+    FAILURE = "Failure"
+    PENDING = "Pending"
+
+
+#STEP-5 react js code for
+$ npx create-react-app my-app
+$ cd my-app
+$ npm start
+
+#Step-6 App.js code
+import React from "react";
+import logo from "./logo.svg";
+import "./App.css";
+import axios from "axios";
+
+function App() {
+
+//Function to load razorpay script for the display of razorpay payment SDK.
+  function loadRazorpayScript(src) {
+    return new Promise((resolve) => {
+        const script = document.createElement("script");
+        script.src = src;
+        script.onload = () => {
+            resolve(true);
+        };
+        script.onerror = () => {
+            resolve(false);
+        };
+        document.body.appendChild(script);
+    });
+}
+
+//function will get called when clicked on the pay button.
+async function displayRazorpayPaymentSdk() {
+  const res = await loadRazorpayScript(
+      "https://checkout.razorpay.com/v1/checkout.js"
+  );
+
+  if (!res) {
+      alert("Razorpay SDK failed to load. please check are you online?");
+      return;
+  }
+
+  // creating a new order and sending order ID to backend
+  const result = await axios.post("http://127.0.0.1:8000/razorpay_order", {
+      "order_id" : "Order-5152"
+  });
+
+  if (!result) {
+      alert("Server error. please check are you onlin?");
+      return;
+  }
+
+  // Getting the order details back
+   const {merchantId=null , amount=null,currency=null,orderId=null } = result.data;
+
+  const options = {
+      key: merchantId,
+      amount: amount.toString(),
+      currency: currency,
+      name: "Razorpay Testing",
+      description: "Test Transaction",
+      image: { logo },
+      order_id: orderId,
+      callback_url: "http://127.0.0.1:8000/razorpay_callback",
+      redirect: true,
+      prefill: {
+        name: "Swapnil Pawar",
+        email: "swapnil@example.com",
+        contact: "9999999999",
+    },
+      notes: {
+          address: "None",
+      },
+      theme: {
+          color: "#61dafb",
+      },
+  };
+
+  const paymentObject = new window.Razorpay(options);
+  paymentObject.open();
+}
+
+    return (
+        <div className="App">
+            <header className="App-header">
+                <img src={logo} className="App-logo" alt="logo" />
+                <p>Razorpay Payments ! Try it Once </p>
+                <button className="App-link" onClick={displayRazorpayPaymentSdk}>
+                    Pay Now To Test
+                </button>
+            </header>
+        </div>
+    );
+}
+
+export default App;
